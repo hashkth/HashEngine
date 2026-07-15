@@ -1,0 +1,7 @@
+glux
+moderngl
+pyopenalsoft
+numpy
+pyglm
+Pillow
+pygltflib
