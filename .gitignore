@@ -1,2 +1,6 @@
 __pycache__
 imgui.ini
+.vscode
+data/
+exports/
+shaders/
