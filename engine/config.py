@@ -70,7 +70,7 @@ def load_engine_shader(filename: str):
 @dataclass
 class Timer:
     """
-    Signals 'interval' seconds after 'time' based on 'looping' and 'active' \n
+    Rings every 'interval' seconds \n
     Looping timers: Send single rings after each interval if active \n
     Non-looping timers: Continuously ring after interval since start until stopped
     """
@@ -106,7 +106,7 @@ class Clock:
     def create_timer(cls, label: str, interval: float, looping: bool):
         """
         label: accessor for timer object\n
-        interval: loop interval if looping\n
+        interval: seconds to wait\n
         looping: to loop or not\n
         Countable loops NOT implemented
         """
@@ -144,6 +144,7 @@ class Clock:
         # Pause buffer stores time elapsed since last ring
         # We will subtract this from cls.time while resuming so that 
         # interval - already_elapsed time will be left until the next ring
+        # |--------pause buffer---------|----rem time----|
         cls.timers[label].pause_buffer = (cls.time - cls.timers[label].time)
         cls.timers[label].active = False
         cls.timers[label].paused = True
@@ -173,5 +174,6 @@ class Clock:
             timer.ringed = False
             if timer.active:
                 if Clock.time - timer.time > timer.interval:
-                    if timer.looping: timer.time = Clock.time
+                    if timer.looping:
+                        timer.time = Clock.time
                     timer.ringed = True
