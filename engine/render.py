@@ -346,6 +346,8 @@ class Renderer:
         glb_model = Data.get_model(label)
         new_data  = np.array([], 'f4')
 
+        buffer_has_data = cls.global_vbo_offset > 0
+
         for mesh, data in glb_model.meshes.items():
             final_label = glb_model.name + '#' + mesh
             mesh_data   = np.ascontiguousarray(np.hstack([data["uvs"], data["vertices"], data["normals"]]).ravel())
@@ -377,11 +379,10 @@ class Renderer:
         cls.model_texture_handle_ssbo.write(handles32.tobytes())
 
         # Append new geometry to the global VBO (re-allocate to grow it)
-        existing = cls.global_vbo.read() if cls.global_vbo else b''
+        existing = cls.global_vbo.read() if (cls.global_vbo and buffer_has_data) else b''
         if cls.global_vbo:
             cls.global_vbo.release()
         cls.global_vbo = cls.core.ctx.buffer(existing + new_data.tobytes())
-
         cls._rebuild_model_vao()
 
     @classmethod
