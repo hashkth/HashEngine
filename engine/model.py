@@ -46,6 +46,9 @@ class GLBModel:
         self._load_meshes()
         del self.gltf, self._blob
 
+    def __del__(self):
+        del self.meshes, self.materials, self._loaded_textures
+
     def _build_parent_map(self):
         """Maps each child node index to its parent node index"""
         self.parent_map = {
@@ -202,7 +205,7 @@ class GLBModel:
         
         # Translate PBR material data into the Blinn-Phong lighting model
         return {
-            "ambient":    tuple(c * 0.2 for c in diff),
+            "ambient":    tuple(c * 0.05 for c in diff),
             "diffuse":    diff,
             "specular":   diff if metal > 0.5 else (0.5, 0.5, 0.5),
             "shininess":  max(1.0, (1.0 - rough) * 128),
