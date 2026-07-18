@@ -27,11 +27,10 @@ class Data:
         """
         Load up a cubemap
         label: identifier for the cubemap
-        right, left, up, down, front, back are the names of respective \
-        images in CWD/data/textures
+        right, left, up, down, front, back are the filepaths of respective images
         """
         faces  = [right, left, up, down, back, front]
-        images = [Image.open(TEX_DIR / f) for f in faces]
+        images = [Image.open(f) for f in faces]
         images[2] = images[2].rotate(90)
         data = b"".join(img.tobytes() for img in images)
         cls.cubemaps[label] = cls.core.ctx.texture_cube(
@@ -54,14 +53,14 @@ class Data:
         del cls.cubemaps[label]
 
     @classmethod
-    def load_tex(cls, label: str, filename: str):
+    def load_tex(cls, label: str, fp: str):
         """
         Load up a texture
         label: identifier for texture
-        filename: name of image in CWD/engine/textures
+        fp: complete path of texture
         """
         if label not in cls.textures:
-            img = Image.open(TEX_DIR / filename).convert("RGB").transpose(Image.FLIP_TOP_BOTTOM)
+            img = Image.open(fp).convert("RGB").transpose(Image.FLIP_TOP_BOTTOM)
             cls.textures[label] = cls.core.ctx.texture(size=img.size, components=3, data=img.tobytes())
             cls.textures[label].build_mipmaps()
 
@@ -95,8 +94,13 @@ class Data:
         cls.textures[label].use(location=1)
 
     @classmethod
-    def load_model(cls, label: str, filename: str):
-        cls.models[label] = GLBModel(label, MODEL_DIR.joinpath(filename))
+    def load_model(cls, label: str, fp: str):
+        """
+        Load up a model
+        label: identifier for model
+        fp: complete path of model
+        """
+        cls.models[label] = GLBModel(label, fp)
 
     @classmethod
     def remove_model(cls, label: str):
@@ -104,7 +108,7 @@ class Data:
         Removes the model and all textures prefixed with the model's label
         """
         if label in cls.models:
-            prefix = f"{label}#"
+            prefix = f"{label}."
             targets = [t for t in cls.textures if t.startswith(prefix)]
             for t in targets:
                 cls.remove_tex(t)
@@ -123,14 +127,14 @@ class Data:
         return cls.models[label]
 
     @classmethod
-    def add_imgui_font(cls, label: str, filename: str, size: int):
+    def add_imgui_font(cls, label: str, fp: str, size: int):
         cfg = imgui.FontConfig()
         cfg.name         = label
         cfg.oversample_h = 2
         cfg.oversample_v = 2
         cls.imgui_font_configs[label] = cfg
         cls.imgui_fonts[label] = cls.core.imgui_io.fonts.add_font_from_file_ttf(
-            str(TEX_DIR / filename), size, cfg
+            str(fp), size, cfg
         )
 
     @classmethod
