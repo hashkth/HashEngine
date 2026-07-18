@@ -129,7 +129,8 @@ class Core:
         cls.qw, cls.qh = math.ceil(cls.w) // 4, math.ceil(cls.h) // 4
         
         if cls.active_s:
-            cls.active_s.process()            
+            cls.active_s.process()
+            TK_ROOT.update()
 
     @classmethod
     def render(cls):
