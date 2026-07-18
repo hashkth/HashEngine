@@ -16,8 +16,8 @@ from tkinter import filedialog
 from dataclasses import dataclass
 
 # Hidden tk instance, tk is used for file dialogs
-root = tk.Tk()
-root.withdraw()
+TK_ROOT = tk.Tk()
+TK_ROOT.withdraw()
 
 # Setup paths
 CWD = pathlib.Path().cwd()
