@@ -1,25 +1,34 @@
+
 from .states import *
 
 
 class Renderer:
 
-    """
-    Fixes Required:
-    - Glitchy Transparent 2D texture rendering (rapid flickering)
-    """
-
+    # Multiplier used to increase capacity of VBOs and SSBOs
     BUFF_GROWTH_FACTOR = 2
 
     # Byte sizes for GPU buffer layout
-    VERTEX_SIZE   = 8   # 2f uv + 3f pos + 3f normal
-    INSTANCE_SIZE = 96  # mat4 + tex_id + pad[3] + tint + alpha
-    MATERIAL_SIZE = 48  # ambient + diffuse + specular + shininess
+    POINT_VERTEX_SIZE   = 32 # 1f size + 3f pos + 4f color
+    LINE_VERTEX_SIZE    = 56 # (3f pos + 4f color) × 2 endpoints
+    VERTEX_SIZE         = 8  # 2f uv + 3f pos + 3f normal
+    INSTANCE_SIZE       = 96 # 16f mat4 + 1f tex_id + pad[3] + 3f tint + alpha
+    TEX_INSTANCE_SIZE   = 96 # 16f mat4 + 1f tex_index + pad[3] + 3f tint + alpha
+    MATERIAL_SIZE       = 48 # 3f ambient + pad[1] + 3f diffuse + pad[1] + 3f specular + 1f shininess
+    DRAW_CMD_SIZE       = 20 # 5f -> count + instanceCount + firstIndex + baseVertex + baseInstance
+    TEX_HANDLE_SIZE     = 8  # uint64 handle size (or 2x u4 in SSBO layout)
 
-    MAX_POINTS    = 500
-    MAX_LINES     = 500
-    MAX_INSTANCES = 500
-    MAX_DRAWS     = 256
+    # Initial capacity limits before triggering buffer growth
+    # Example for MAX_INDICES:
+    # 1_000_000 indices support loading 2 unique models 500_000 vertices big each
+    MAX_INDICES         = 1_000_000 # Total no. of vertices across all unique loaded models
+    MAX_POINTS          = 512 # Max points allowed in point_vbo per frame
+    MAX_LINES           = 512 # Max line segments allowed in line_vbo per frame
+    MAX_INSTANCES       = 512 # Max concurrent 3D object instances allocated in instance_ssbo
+    MAX_DRAWS           = 256 # Max distinct indirect draw commands allocated in draw_cmd_buffer
+    MAX_TEX_INSTANCES   = 512 # Max 2D sprite quad instances allocated in tex_instance_ssbo
+    MAX_TEX_HANDLES     = 512 # Max resident bindless texture handles per pipeline
 
+    # Reference to the main engine core: core.ctx -> ModernGL context
     core = None
 
     # Points
@@ -34,52 +43,55 @@ class Renderer:
     line_vbo  = None
     line_vao  = None
 
-    # Models — geometry is packed into one big VBO shared across all meshes
-    global_ibo      = None
-    global_vbo      = None
-    global_vbo_data = np.array([], 'f4')
+    # Global Mesh Geometry management
+    global_ibo      = None # Master Index Buffer Object mapping vertex indices across all loaded models
+    global_vbo      = None # Single contiguous VBO packing interleaved UV, Position, and Normal data
+
+    # Models
     model_prog      = None
     model_vao       = None
-    model_tex_handles = []
-    model_tex_lookup  = {}
 
-    # Per-frame draw buckets, keyed by mesh label
-    meshes               = {}
-    opaque_instances     = {}
-    cutout_instances     = {}   # alpha_mode == "MASK"
-    transparent_instances = {}
-    persistent_draw_entries  = {}   # handle -> {mesh_label, tint, alpha, base_instance, draw_cmd_index}
-    persistent_instance_data = {}   # mesh_label -> packed bytes already in the SSBO
-    persistent_draw_cmds     = {}   # mesh_label -> {count, instance_count, firstIndex, baseVertex, base_instance}
-    persistent_material_data = {}   # mesh_label -> packed floats already in material SSBO
-    _persistent_handle_counter = 0
-    _persistent_instance_count = 0  # how many instance slots are occupied at the front of the SSBO
-    _persistent_draw_count     = 0  # how many draw commands are occupied at the front of the draw cmd buffer
+    # Bindless Texture management for 3D models
+    model_tex_handles = [] # List storing 64-bit uint GPU handles for resident 3D model textures
+    model_tex_lookup  = {} # Maps texture label strings -> index position within model_tex_handles
 
+    # Per-frame dynamic draw queues (rebuilt and cleared every frame)
+    meshes                = {} # Registry storing vertex offset, count, alpha_mode, and tex_index per mesh label
+    opaque_instances      = {} # Dynamic non-transparent mesh instances queued for the current frame
+    cutout_instances      = {} # Dynamic alpha-masked mesh instances (e.g., foliage) queued for the current frame
+    transparent_instances = {} # Dynamic blending mesh instances (alpha < 0.9) queued for the current frame
 
-    # SSBOs
-    instance_ssbo              = None
-    base_instance_ssbo         = None
-    draw_cmd_buffer            = None
-    material_ssbo              = None
-    model_texture_handle_ssbo  = None
-    tex_texture_handle_ssbo    = None
-
-    # Texture sprites (procedural quad geometry generated in the vertex shader)
+    # Persistent / Static model management (resident GPU data that bypasses CPU re-packing)
+    persistent_draw_entries    = {} # Maps handle ID -> metadata dict tracking static instance GPU locations
+    persistent_instance_data   = {} # Cache of packed bytes permanently written to the front of instance_ssbo
+    persistent_draw_cmds       = {} # Cache of indirect commands permanently written to draw_cmd_buffer
+    persistent_material_data   = {} # Cache of material attributes permanently written to material_ssbo
+    _persistent_handle_counter = 0  # Unique ID counter incremented on every static instance creation
+    _persistent_instance_count = 0  # Total count of persistent slots reserved at the front of instance_ssbo
+    _persistent_draw_count     = 0  # Total count of persistent commands reserved at the front of draw_cmd_buffer
+    
+    # Textures
     tex_prog          = None
     tex_vao           = None
-    tex_instance_ssbo = None
-    tex_opaque_queue      = []  # alpha >= 0.9
-    tex_transparent_queue = []  # alpha <  0.9
-    tex_tex_handles = []
-    tex_tex_lookup  = {}
-    MAX_TEX_INSTANCES = 500
-    TEX_INSTANCE_SIZE = 96
+    tex_opaque_queue      = [] # Frame queue for opaque sprite instance bytes (alpha >= 0.9)
+    tex_transparent_queue = [] # Frame queue for semi-transparent sprite instance bytes (alpha < 0.9)
+    tex_tex_handles       = [] # List storing 64-bit uint GPU handles for resident 2D sprite textures
+    tex_tex_lookup        = {} # Maps texture label strings -> index position within tex_tex_handles
 
-    # Lights
-    lights        = []
-    ambient_light = [0.5, 0.5, 0.5]
+    # SSBOs
+    instance_ssbo             = None # Binding 0: Stores transform, tex_index, tint, and alpha per 3D instance
+    base_instance_ssbo        = None # Binding 1: Maps draw call index to its starting offset in instance_ssbo
+    material_ssbo             = None # Binding 2: Stores ambient, diffuse, specular, and shininess per draw call
+    tex_instance_ssbo         = None # Binding 3: Stores transform, tex_index, tint, and alpha for 2D sprites
+    model_texture_handle_ssbo = None # Binding 4: Stores uint64 bindless texture handles for 3D models
+    tex_texture_handle_ssbo   = None # Binding 5: Stores uint64 bindless texture handles for 2D sprites
+    draw_cmd_buffer           = None # Indirect buffer storing struct [count, instanceCount, firstIndex, baseVertex, baseInstance]
 
+    # Scene Lighting
+    lights        = []              # Global list tracking active LightSource instances (max 8)
+    ambient_light = [0.5, 0.5, 0.5] # Base RGB ambient scene color passed to model_prog
+
+    # Environment Skybox
     skybox_vertices = np.array([
         -1,  1, -1,  -1, -1, -1,   1, -1, -1,
          1, -1, -1,   1,  1, -1,  -1,  1, -1,
@@ -96,8 +108,7 @@ class Renderer:
         -1,  1, -1,   1,  1, -1,   1,  1,  1,
          1,  1,  1,  -1,  1,  1,  -1,  1, -1,
 
-        -1, -1, -1,  -1, -1,  1,   1, -1, -1,
-         1, -1, -1,  -1, -1,  1,   1, -1,  1,
+        -1, -1, -1,  -1, -1,  1,   1, -1, -1,  1, -1, -1,  -1, -1,  1,   1, -1,  1,
     ], dtype='f4')
     skybox_vbo     = None
     skybox_prog    = None
@@ -105,25 +116,14 @@ class Renderer:
     skybox_cubemap = None
     skybox_enabled = False
 
+    # Enable/Disable Rendering: if False, render() returns immediately
     _enabled = True
 
+    # Byte offset tracking current end of data in global_vbo for appending new models
     global_vbo_offset = 0
 
-    # -------------------------------------------------------------------------
-    # Enable / disable
-    # -------------------------------------------------------------------------
-
-    @classmethod
-    def enable(cls):
-        cls._enabled = True
-
-    @classmethod
-    def disable(cls):
-        cls._enabled = False
-
-    # -------------------------------------------------------------------------
-    # Initialisation
-    # -------------------------------------------------------------------------
+    # Default white texture used when model contains no texture
+    default_tex = None
 
     @classmethod
     def init(cls, core):
@@ -138,8 +138,7 @@ class Renderer:
         ctx.enable(mgl.BLEND)
         ctx.disable(mgl.CULL_FACE)
 
-        # Points — 32 bytes per vertex (1f size + 3f pos + 4f color)
-        cls.point_vbo  = ctx.buffer(reserve=32 * cls.MAX_POINTS, dynamic=True)
+        cls.point_vbo  = ctx.buffer(reserve=cls.POINT_VERTEX_SIZE * cls.MAX_POINTS, dynamic=True)
         cls.point_prog = ctx.program(
             load_engine_shader("point_vs.glsl"),
             load_engine_shader("point_fs.glsl"),
@@ -148,8 +147,7 @@ class Renderer:
         cls.point_prog['projection'].write(np.array(Camera.projection.to_list(), dtype='f4').tobytes())
         cls.point_vao = ctx.vertex_array(cls.point_prog, cls.point_vbo, 'in_size', 'in_pos', 'in_col')
 
-        # Lines — 56 bytes per vertex (3f pos + 4f color) × 2 endpoints
-        cls.line_vbo  = ctx.buffer(reserve=56 * cls.MAX_LINES, dynamic=True)
+        cls.line_vbo  = ctx.buffer(reserve=cls.LINE_VERTEX_SIZE * cls.MAX_LINES, dynamic=True)
         cls.line_prog = ctx.program(
             load_engine_shader("line_vs.glsl"),
             load_engine_shader("line_fs.glsl"),
@@ -158,7 +156,6 @@ class Renderer:
         cls.line_prog['projection'].write(np.array(Camera.projection.to_list(), dtype='f4').tobytes())
         cls.line_vao = ctx.vertex_array(cls.line_prog, cls.line_vbo, 'in_pos', 'in_col')
 
-        # Models
         cls.model_prog = ctx.program(
             load_engine_shader("model_vs.glsl"),
             load_engine_shader("model_fs.glsl"),
@@ -167,31 +164,29 @@ class Renderer:
         cls.set_ambient_light(cls.ambient_light)
         cls.enable_specular()
 
-        cls.global_ibo        = ctx.buffer(np.arange(400000, dtype='u4').tobytes())
-        cls.instance_ssbo     = ctx.buffer(reserve=cls.MAX_INSTANCES * cls.INSTANCE_SIZE)
-        cls.draw_cmd_buffer   = ctx.buffer(reserve=cls.MAX_DRAWS * 20)
-        cls.base_instance_ssbo = ctx.buffer(reserve=cls.MAX_DRAWS * 4)
-        cls.material_ssbo     = ctx.buffer(reserve=cls.MAX_DRAWS * cls.MATERIAL_SIZE)
-        cls.model_texture_handle_ssbo = ctx.buffer(reserve=500 * 64)
-        cls.tex_texture_handle_ssbo   = ctx.buffer(reserve=500 * 64)
-
-        cls.instance_ssbo.bind_to_storage_buffer(0)
-        cls.base_instance_ssbo.bind_to_storage_buffer(1)
-        cls.material_ssbo.bind_to_storage_buffer(2)
-        cls.model_texture_handle_ssbo.bind_to_storage_buffer(4)
-        cls.tex_texture_handle_ssbo.bind_to_storage_buffer(5)
-
-        # Texture sprite MDI
         cls.tex_prog = ctx.program(
             load_engine_shader("texture_vs.glsl"),
             load_engine_shader("texture_fs.glsl"),
         )
         cls.tex_prog['projection'].write(np.array(Camera.projection.to_list(), dtype='f4').tobytes())
-        cls.tex_vao           = ctx.vertex_array(cls.tex_prog, [])
-        cls.tex_instance_ssbo = ctx.buffer(reserve=cls.MAX_TEX_INSTANCES * cls.TEX_INSTANCE_SIZE, dynamic=True)
-        cls.tex_instance_ssbo.bind_to_storage_buffer(3)
+        cls.tex_vao = ctx.vertex_array(cls.tex_prog, [])
 
-        # Skybox
+        cls.global_ibo                  = ctx.buffer(np.arange(cls.MAX_INDICES, dtype='u4').tobytes())
+        cls.instance_ssbo               = ctx.buffer(reserve=cls.MAX_INSTANCES * cls.INSTANCE_SIZE)
+        cls.base_instance_ssbo          = ctx.buffer(reserve=cls.MAX_DRAWS * 4)
+        cls.material_ssbo               = ctx.buffer(reserve=cls.MAX_DRAWS * cls.MATERIAL_SIZE)
+        cls.model_texture_handle_ssbo   = ctx.buffer(reserve=cls.MAX_TEX_HANDLES * cls.TEX_HANDLE_SIZE)
+        cls.tex_texture_handle_ssbo     = ctx.buffer(reserve=cls.MAX_TEX_HANDLES * cls.TEX_HANDLE_SIZE)
+        cls.tex_instance_ssbo           = ctx.buffer(reserve=cls.MAX_TEX_INSTANCES * cls.TEX_INSTANCE_SIZE, dynamic=True)
+        cls.draw_cmd_buffer             = ctx.buffer(reserve=cls.MAX_DRAWS * cls.DRAW_CMD_SIZE)
+        
+        cls.instance_ssbo.bind_to_storage_buffer(0)
+        cls.base_instance_ssbo.bind_to_storage_buffer(1)
+        cls.material_ssbo.bind_to_storage_buffer(2)
+        cls.tex_instance_ssbo.bind_to_storage_buffer(3)
+        cls.model_texture_handle_ssbo.bind_to_storage_buffer(4)
+        cls.tex_texture_handle_ssbo.bind_to_storage_buffer(5)
+
         cls.skybox_vbo  = ctx.buffer(cls.skybox_vertices.tobytes())
         cls.skybox_prog = ctx.program(
             load_engine_shader("skybox_vs.glsl"),
@@ -203,20 +198,22 @@ class Renderer:
             [(cls.skybox_vbo, '3f', 'in_position')],
         )
 
-        # Default 1×1 white texture occupies slot 0; used for untextured meshes
         white_pixel = np.array([255, 255, 255, 255], dtype='u1')
         cls.default_tex = ctx.texture((1, 1), 4, white_pixel.tobytes())
-        cls.model_tex_lookup["default_white"] = 0
         cls.model_tex_handles.append(cls.default_tex.get_handle())
         handles64 = np.array(cls.model_tex_handles, dtype=np.uint64)
         handles32 = np.zeros((len(handles64), 2), dtype=np.uint32)
-        handles32[:, 0] = handles64 & 4294967295
+        handles32[:, 0] = handles64 & 0xFFFFFFFF
         handles32[:, 1] = handles64 >> 32
         cls.model_texture_handle_ssbo.write(handles32.tobytes())
 
-    # -------------------------------------------------------------------------
-    # Settings
-    # -------------------------------------------------------------------------
+    @classmethod
+    def enable(cls):
+        cls._enabled = True
+
+    @classmethod
+    def disable(cls):
+        cls._enabled = False
 
     @classmethod
     def set_line_width(cls, line_width: float):
