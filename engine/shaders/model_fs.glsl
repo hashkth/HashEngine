@@ -3,12 +3,12 @@
 #extension GL_ARB_shader_draw_parameters : require
 #extension GL_ARB_bindless_texture : require
 
+#define MAX_LIGHTS {RENDERER_MAX_LIGHTS}
 
 struct Light {
     vec3 position;
-    float intensity;  // packed with position's padding slot
+    float intensity;
     vec3 color;
-    float _pad;       // explicit padding to keep alignment clean
 };
 
 struct Material {
@@ -18,7 +18,6 @@ struct Material {
     float shininess;
 };
 
-#define MAX_LIGHTS 8
 uniform Light lights[MAX_LIGHTS];
 uniform int num_lights;
 uniform vec3 view_pos;
@@ -52,7 +51,7 @@ void main() {
 
     vec4 texSample = sampleTexture(v_tex_id, uv);
     vec3 albedo = mat.diffuse * texSample.rgb;
-    vec3 result = ambient_light * mat.ambient * albedo * 10;
+    vec3 result = ambient_light * albedo;
 
     for (int i = 0; i < num_lights; i++) {
         vec3 light_dir = normalize(lights[i].position - v_pos);
