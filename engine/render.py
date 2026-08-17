@@ -27,6 +27,7 @@ class Renderer:
     MAX_DRAWS           = 256 # Max distinct indirect draw commands allocated in draw_cmd_buffer
     MAX_TEX_INSTANCES   = 512 # Max 2D sprite quad instances allocated in tex_instance_ssbo
     MAX_TEX_HANDLES     = 512 # Max resident bindless texture handles per pipeline
+    MAX_LIGHTS          = 8   # Maximum lights that the renderer can accomodate simultaneously
 
     # Reference to the main engine core: core.ctx -> ModernGL context
     core = None
@@ -89,7 +90,7 @@ class Renderer:
 
     # Scene Lighting
     lights        = []              # Global list tracking active LightSource instances (max 8)
-    ambient_light = [0.5, 0.5, 0.5] # Base RGB ambient scene color passed to model_prog
+    ambient_light = [0.2, 0.2, 0.2] # Base RGB ambient scene color passed to model_prog
 
     # Environment Skybox
     skybox_vertices = np.array([
@@ -127,6 +128,7 @@ class Renderer:
 
     @classmethod
     def init(cls, core):
+        """Initialize Renderer"""
         cls.core = core
         ctx = cls.core.ctx
 
@@ -158,7 +160,7 @@ class Renderer:
 
         cls.model_prog = ctx.program(
             load_engine_shader("model_vs.glsl"),
-            load_engine_shader("model_fs.glsl"),
+            load_engine_shader("model_fs.glsl").replace("{RENDERER_MAX_LIGHTS}", str(cls.MAX_LIGHTS))
         )
         cls.model_prog['projection'].write(np.array(Camera.projection.to_list(), dtype='f4').tobytes())
         cls.set_ambient_light(cls.ambient_light)
@@ -176,7 +178,7 @@ class Renderer:
         cls.base_instance_ssbo          = ctx.buffer(reserve=cls.MAX_DRAWS * 4)
         cls.material_ssbo               = ctx.buffer(reserve=cls.MAX_DRAWS * cls.MATERIAL_SIZE)
         cls.model_texture_handle_ssbo   = ctx.buffer(reserve=cls.MAX_TEX_HANDLES * cls.TEX_HANDLE_SIZE)
-        cls.tex_texture_handle_ssbo     = ctx.buffer(reserve=cls.MAX_TEX_HANDLES * cls.TEX_HANDLE_SIZE)
+        cls.tex_texture_handle_ssbo     = ctx.buffer(reserve=cls.MAX_TEX_HANDLES * cls.TEX_HANDLE_SIZE) # Confusing, to be clarified
         cls.tex_instance_ssbo           = ctx.buffer(reserve=cls.MAX_TEX_INSTANCES * cls.TEX_INSTANCE_SIZE, dynamic=True)
         cls.draw_cmd_buffer             = ctx.buffer(reserve=cls.MAX_DRAWS * cls.DRAW_CMD_SIZE)
         
@@ -209,48 +211,59 @@ class Renderer:
 
     @classmethod
     def enable(cls):
+        """Enable rendering"""
         cls._enabled = True
 
     @classmethod
     def disable(cls):
+        """Disable rendering"""
         cls._enabled = False
 
     @classmethod
     def set_line_width(cls, line_width: float):
+        """Set width for line primitives"""
         cls.core.ctx.line_width = line_width
 
     @classmethod
     def set_ambient_light(cls, light: list):
+        """
+        Set unlit brightness for the 3D models \n
+        light: [r, g, b]
+        """
         cls.ambient_light = light
         cls.model_prog['ambient_light'].value = tuple(light)
 
     @classmethod
     def enable_specular(cls):
+        """Enable specular rendering"""
         cls.model_prog['use_spec'].value = True
 
     @classmethod
     def disable_specular(cls):
+        """Disable specular rendering"""
         cls.model_prog['use_spec'].value = False
 
     @classmethod
     def enable_skybox(cls):
-        """Skybox is only rendered in 3D perspective."""
+        """
+        Enable skybox rendering\n
+        Note: Skybox is only rendered in 3D perspective
+        """
         cls.skybox_enabled = True
 
     @classmethod
     def disable_skybox(cls):
+        """Disable skybox rendering"""
         cls.skybox_enabled = False
 
     @classmethod
     def set_skybox(cls, label: str):
+        """Set skybox by using a cubemap loaded in Data"""
         cls.skybox_cubemap = Data.get_cubemap(label)
-
-    # -------------------------------------------------------------------------
-    # Internal GPU uploads
-    # -------------------------------------------------------------------------
 
     @classmethod
     def _upload_lights(cls):
+        """Upload lights to model_prog"""
         cls.model_prog['num_lights'].value = len(cls.lights)
         for i, light in enumerate(cls.lights):
             cls.model_prog[f'lights[{i}].position'].value  = tuple(light.pos)
@@ -259,6 +272,7 @@ class Renderer:
 
     @classmethod
     def _upload_view(cls):
+        """Update view matrix for all relevant shaders"""
         view_bytes = np.array(Camera.view.to_list(), dtype='f4').tobytes()
         cls.model_prog['view'].write(view_bytes)
         cls.model_prog['view_pos'].write(Camera.pos.to_bytes())
@@ -266,67 +280,62 @@ class Renderer:
 
     @classmethod
     def _update_projection(cls):
+        """Update projection matrix for all relevant shaders"""
         proj_bytes = np.array(Camera.projection.to_list(), dtype='f4').tobytes()
         for prog in (cls.skybox_prog, cls.point_prog, cls.line_prog, cls.model_prog, cls.tex_prog):
             prog['projection'].write(proj_bytes)
 
     @classmethod
     def _grow_point_buffer(cls):
+        """Expand and regenerate point buffer on reaching limit"""
         cls.MAX_POINTS = int(cls.MAX_POINTS * cls.BUFF_GROWTH_FACTOR)
         cls.point_vbo.release()
-        cls.point_vbo = cls.core.ctx.buffer(reserve=32 * cls.MAX_POINTS, dynamic=True)
+        cls.point_vbo = cls.core.ctx.buffer(reserve=cls.POINT_VERTEX_SIZE * cls.MAX_POINTS, dynamic=True)
         cls.point_vao = cls.core.ctx.vertex_array(cls.point_prog, cls.point_vbo, 'in_size', 'in_pos', 'in_col')
 
     @classmethod
     def _grow_line_buffer(cls):
+        """Expand and regenerate line buffer on reaching limit"""
         cls.MAX_LINES = int(cls.MAX_LINES * cls.BUFF_GROWTH_FACTOR)
         cls.line_vbo.release()
-        cls.line_vbo = cls.core.ctx.buffer(reserve=56 * cls.MAX_LINES, dynamic=True)
+        cls.line_vbo = cls.core.ctx.buffer(reserve=cls.LINE_VERTEX_SIZE * cls.MAX_LINES, dynamic=True)
         cls.line_vao = cls.core.ctx.vertex_array(cls.line_prog, cls.line_vbo, 'in_pos', 'in_col')
 
     @classmethod
     def _grow_model_ssbos(cls):
-        """Double all model-pipeline SSBOs when either instance or draw capacity is exceeded."""
+        """Double all model-pipeline SSBOs when either instance or draw capacity is exceeded"""
         ctx = cls.core.ctx
 
         cls.MAX_INSTANCES = int(cls.MAX_INSTANCES * cls.BUFF_GROWTH_FACTOR)
         cls.MAX_DRAWS     = int(cls.MAX_DRAWS     * cls.BUFF_GROWTH_FACTOR)
 
-        # Preserve live data so the resize is transparent to the caller
         instance_data      = cls.instance_ssbo.read()
         base_instance_data = cls.base_instance_ssbo.read()
         draw_cmd_data      = cls.draw_cmd_buffer.read()
         material_data      = cls.material_ssbo.read()
-        tex_handle_data    = cls.model_texture_handle_ssbo.read()
 
         cls.instance_ssbo.release()
         cls.base_instance_ssbo.release()
         cls.draw_cmd_buffer.release()
         cls.material_ssbo.release()
-        cls.model_texture_handle_ssbo.release()
 
-        cls.instance_ssbo     = ctx.buffer(reserve=cls.MAX_INSTANCES * cls.INSTANCE_SIZE)
-        cls.base_instance_ssbo = ctx.buffer(reserve=cls.MAX_DRAWS * 4)
-        cls.draw_cmd_buffer   = ctx.buffer(reserve=cls.MAX_DRAWS * 20)
-        cls.material_ssbo     = ctx.buffer(reserve=cls.MAX_DRAWS * cls.MATERIAL_SIZE)
-        cls.model_texture_handle_ssbo = ctx.buffer(reserve=cls.MAX_INSTANCES * 64)
+        cls.instance_ssbo       = ctx.buffer(reserve=cls.MAX_INSTANCES * cls.INSTANCE_SIZE)
+        cls.base_instance_ssbo  = ctx.buffer(reserve=cls.MAX_DRAWS * 4)
+        cls.draw_cmd_buffer     = ctx.buffer(reserve=cls.MAX_DRAWS * cls.DRAW_CMD_SIZE)
+        cls.material_ssbo       = ctx.buffer(reserve=cls.MAX_DRAWS * cls.MATERIAL_SIZE)
 
-        # Re-bind to the same slots they were assigned during init()
-        cls.instance_ssbo.bind_to_storage_buffer(0)
-        cls.base_instance_ssbo.bind_to_storage_buffer(1)
-        cls.material_ssbo.bind_to_storage_buffer(2)
-        cls.model_texture_handle_ssbo.bind_to_storage_buffer(4)
-
-        # Restore the data that was already staged for this frame
         cls.instance_ssbo.write(instance_data)
         cls.base_instance_ssbo.write(base_instance_data)
         cls.draw_cmd_buffer.write(draw_cmd_data)
         cls.material_ssbo.write(material_data)
-        cls.model_texture_handle_ssbo.write(tex_handle_data)    
+
+        cls.instance_ssbo.bind_to_storage_buffer(0)
+        cls.base_instance_ssbo.bind_to_storage_buffer(1)
+        cls.material_ssbo.bind_to_storage_buffer(2)
 
     @classmethod
     def _rebuild_model_vao(cls):
-        """Releases and recreates the model VAO against the current global_vbo."""
+        """Recreates the model VAO against the current global_vbo"""
         if cls.model_vao:
             cls.model_vao.release()
         cls.model_vao = cls.core.ctx.vertex_array(
@@ -336,13 +345,22 @@ class Renderer:
         )
 
     @classmethod
-    def add_model(cls, label: str, filename: str):
+    def add_model(cls, label: str, fp: str):
+        """
+        Loads and sets up a GLB model to be used by the Renderer
+        label: key used to refer to this model
+        fp: complete path of the GLB file
+        Note: Generally, you must NOT use Data.load_model() directly, use this instead
+        """
         if label in Data.models:
+            # Already loaded, models need to be loaded only once
             return
-        Data.load_model(label, filename)
+        
+        Data.load_model(label, fp)
         glb_model = Data.get_model(label)
         new_data  = np.array([], 'f4')
 
+        # Used to check whether global_vbo is already populated
         buffer_has_data = cls.global_vbo_offset > 0
 
         for mesh, data in glb_model.meshes.items():
@@ -351,11 +369,12 @@ class Renderer:
             cls.meshes[final_label] = {
                 "offset":     cls.global_vbo_offset // cls.VERTEX_SIZE,
                 "count":      len(mesh_data) // cls.VERTEX_SIZE,
-                "alpha_mode": data.get("alpha_mode", "OPAQUE"),
+                "alpha_mode": data.get("alpha_mode", "OPAQUE"), # defaults to OPAQUE
             }
             new_data = np.concatenate((new_data, mesh_data))
-            cls.global_vbo_offset += len(mesh_data)
+            cls.global_vbo_offset += len(mesh_data) # advance offset by total floats appended
 
+            # Bindless textures
             # Register the texture handle only once per unique image
             tex_label = data["texture_name"]
             if tex_label is not None:
@@ -364,6 +383,7 @@ class Renderer:
                     cls.model_tex_handles.append(Data.get_tex(tex_label).get_handle())
                 cls.meshes[final_label]["tex_index"] = cls.model_tex_lookup[tex_label]
             else:
+                # No texture referenced? NP! Just refer to the default tex
                 cls.meshes[final_label]["tex_index"] = 0
 
             del data["uvs"], data["vertices"], data["normals"]
@@ -371,11 +391,11 @@ class Renderer:
         cls.model_texture_handle_ssbo.clear()
         handles64 = np.array(cls.model_tex_handles, dtype=np.uint64)
         handles32 = np.zeros((len(handles64), 2), dtype=np.uint32)
-        handles32[:, 0] = handles64 & 4294967295
+        handles32[:, 0] = handles64 & 0xFFFFFFFF
         handles32[:, 1] = handles64 >> 32
         cls.model_texture_handle_ssbo.write(handles32.tobytes())
 
-        # Append new geometry to the global VBO (re-allocate to grow it)
+        # Append new geometry to the global VBO
         existing = cls.global_vbo.read() if (cls.global_vbo and buffer_has_data) else b''
         if cls.global_vbo:
             cls.global_vbo.release()
@@ -384,6 +404,10 @@ class Renderer:
 
     @classmethod
     def remove_model(cls, label: str):
+        """
+        Unloads and removes the loaded GLB model safely
+        label: key used to refer to the pre-loaded model
+        """
         if label not in Data.models:
             return
 
@@ -416,6 +440,7 @@ class Renderer:
             cls.cutout_instances.pop(ml, None)
             cls.transparent_instances.pop(ml, None)
 
+        # Recalculate the true global_vbo_offset after removing this model
         if cls.meshes:
             last = max(cls.meshes.values(), key=lambda m: m["offset"])
             cls.global_vbo_offset = (last["offset"] + last["count"]) * cls.VERTEX_SIZE
@@ -428,13 +453,8 @@ class Renderer:
             else cls.core.ctx.buffer(reserve=cls.VERTEX_SIZE * 4)
         )
         del vbo_data
-
         cls._rebuild_model_vao()
-
         Data.remove_model(label)
-
-        import gc
-        gc.collect()
 
     @classmethod
     def load_textures(cls, texture_labels: list):
@@ -444,26 +464,39 @@ class Renderer:
         cls.tex_texture_handle_ssbo.clear()
         cls.tex_texture_handle_ssbo.write(np.array(cls.tex_tex_handles, dtype=np.uint64).tobytes())
 
-    # -------------------------------------------------------------------------
-    # Draw calls (queued per frame, flushed in render())
-    # -------------------------------------------------------------------------
+    @classmethod
+    def unload_textures(cls, texture_labels: list):
+        removed_set = set(texture_labels)
+        new_handles = []
+        new_lookup  = {}
+        for label, idx in cls.tex_tex_lookup.items():
+            if label not in removed_set:
+                new_lookup[label] = len(new_handles)
+                new_handles.append(cls.tex_tex_handles[idx])
+        cls.tex_tex_lookup  = new_lookup
+        cls.tex_tex_handles = new_handles
+        cls.tex_texture_handle_ssbo.clear()
+        cls.tex_texture_handle_ssbo.write(np.array(cls.tex_tex_handles, dtype=np.uint64).tobytes())
 
     @classmethod
     def draw_point(cls, radius: float = 1.0,
                    x: float = 0.0, y: float = 0.0, z: float = 0.0,
                    r: float = 1.0, g: float = 1.0, b: float = 1.0, a: float = 1.0):
-        """Queue a filled circle (mainly for debugging)."""
+        """Queue a point for rendering"""
         size = radius * Camera.zoom if Camera.perspective == "2d" else radius
         cls.points.extend([size, x, y, z, r, g, b, a])
 
     @classmethod
     def draw_line(cls, point1: list, point2: list):
-        """Queue a line segment. Each point: [x, y, z, r, g, b, a]."""
+        """
+        Queue a line segment for rendering
+        Each point: list[x, y, z, r, g, b, a]
+        """
         cls.lines.extend([*point1, *point2])
 
     @classmethod
     def _draw_mesh(cls, mesh_label: str, transform: glm.mat4, tint=(1, 1, 1), alpha=1.0):
-        """Append one mesh instance to the appropriate alpha bucket."""
+        """Appends one mesh instance to the appropriate alpha bucket"""
         alpha_mode = cls.meshes[mesh_label].get("alpha_mode", "OPAQUE")
         if alpha_mode == "MASK":
             bucket = cls.cutout_instances
@@ -487,9 +520,8 @@ class Renderer:
                             tint=(1, 1, 1), alpha=1.0) -> int:
         """
         Write a mesh instance permanently into the front of the instance SSBO
-        and draw command buffer. It will be drawn every frame at zero CPU cost —
-        no loop, no re-pack, no re-write.
-
+        and draw command buffer. It will be drawn every frame at zero CPU cost,
+        no loop, no re-pack, no re-write
         Returns a handle for later removal via _unset_persistent().
         """
 
@@ -544,15 +576,15 @@ class Renderer:
             "draw_index":    draw_index,
             "inst_bytes":    inst_bytes,   # kept for potential _update_persistent
         }
-
         return handle
     
     @classmethod
     def _update_persistent(cls, handle: int, transform: list = None,
                             tint=None, alpha: float = None):
         """
-        Patch a persistent instance's payload in-place — only rewrites the
-        bytes that changed. No bucket rebuild, no full SSBO rewrite.
+        **CURRENTLY UNUSED** \n
+        Patch a persistent instance's payload in-place. Only rewrites the
+        bytes that changed. No bucket rebuild or full SSBO rewrite required.
         """
         entry     = cls.persistent_draw_entries[handle]
         mesh      = cls.meshes[entry["mesh_label"]]
@@ -576,9 +608,9 @@ class Renderer:
     def _unset_persistent(cls, handle: int):
         """
         Remove a persistent instance. Because the SSBO is a flat packed array,
-        removal shifts all entries that came after it down by one slot — their
+        removal shifts all entries that came after it down by one slot, their
         SSBO offsets, draw command offsets, and base_instance values are all
-        patched in one contiguous rewrite of the affected region.
+        patched in one contiguous rewrite of the affected region
         """
         if handle not in cls.persistent_draw_entries:
             return
@@ -592,7 +624,7 @@ class Renderer:
             size=cls._persistent_instance_count * cls.INSTANCE_SIZE
         ))
         cmd_bytes  = bytearray(cls.draw_cmd_buffer.read(
-            size=cls._persistent_draw_count * 20
+            size=cls._persistent_draw_count * cls.DRAW_CMD_SIZE
         ))
         mat_bytes  = bytearray(cls.material_ssbo.read(
             size=cls._persistent_draw_count * cls.MATERIAL_SIZE
@@ -606,9 +638,10 @@ class Renderer:
         inst_bytes = inst_bytes[:bi * IS] + inst_bytes[(bi + 1) * IS:]
 
         MS = cls.MATERIAL_SIZE
+        DCS = cls.DRAW_CMD_SIZE
         mat_bytes  = mat_bytes[:di * MS]  + mat_bytes[(di + 1) * MS:]
         base_bytes = base_bytes[:di * 4]  + base_bytes[(di + 1) * 4:]
-        cmd_bytes  = cmd_bytes[:di * 20]  + cmd_bytes[(di + 1) * 20:]
+        cmd_bytes  = cmd_bytes[:di * DCS]  + cmd_bytes[(di + 1) * DCS:]
 
         cls._persistent_instance_count -= 1
         cls._persistent_draw_count     -= 1
@@ -635,6 +668,14 @@ class Renderer:
 
     @classmethod
     def draw_model(cls, label: str, transform: glm.mat4, tint=(1, 1, 1), alpha=1.0, persistent: bool = False):
+        """
+        Renders the model referenced by label
+        label: key used to refer to the pre-loaded model
+        transform: 3D transformation matrix for the entire model
+        tint: the color to be blended on top each mesh in the entire model
+        alpha: additional alpha value to be applied to each mesh in the model
+        persistent: ... fill in later!!!
+        """
         glb_model = Data.get_model(label)
         persistent_handles = []
         for mesh in glb_model.meshes:
@@ -648,10 +689,13 @@ class Renderer:
         if persistent:
             return list(persistent_handles)
 
-
     @classmethod
-    def draw_tex(cls, transform, label: int = 0, tint=(1, 1, 1), alpha: float = 1.0):
-        """Queue a texture sprite."""
+    def draw_tex(cls, label: str, transform: glm.mat4, layer: int = 0, tint=(1, 1, 1), alpha: float = 1.0):
+        """
+        Queue a 2D texture sprite for rendering \n
+        Textures drawn at higher layers render above those on a lower layer
+        """
+        transform = glm.translate(transform, glm.vec3(0.0, 0.0, layer * 0.001))
         m    = np.array(glm.transpose(glm.mat4(transform)), dtype='f4').flatten()
         inst = np.concatenate([
             m,
@@ -665,7 +709,7 @@ class Renderer:
 
     @classmethod
     def draw_axes(cls):
-        """Draw the debug coordinate axes (X=red, Y=green, Z=blue)."""
+        """Draw the debug coordinate axes (X=red, Y=green, Z=blue)"""
         cls.core.ctx.line_width = 3
         cx, cy, cz = Camera.pos.x, Camera.pos.y, Camera.pos.z
         far = Camera.far
@@ -680,14 +724,12 @@ class Renderer:
     def render(cls):
         if not cls._enabled:
             return
-
         ctx = cls.core.ctx
-
         if Camera._updated_projection:
             cls._update_projection()
             Camera._updated_projection = False
 
-        # Skybox — drawn with depth writes off so it never occludes geometry
+        # Skybox drawn with depth writes off so it never occludes geometry
         if cls.skybox_enabled and cls.skybox_cubemap is not None and Camera.perspective == "3d":
             cls.skybox_prog['view'].write(np.array(Camera.view.to_list(), dtype='f4').tobytes())
             cls.skybox_cubemap.use(location=1)
@@ -699,7 +741,7 @@ class Renderer:
         num_opaque  = len(cls.opaque_instances)
         num_cutout  = len(cls.cutout_instances)
 
-        # Pack all draw buckets in order: opaque → cutout → transparent.
+        # Pack all draw buckets in order: opaque -> cutout -> transparent.
         # Solid geometry writes depth first, so alpha-tested meshes never
         # incorrectly occlude opaque ones.
         combined_buckets = (
@@ -757,13 +799,13 @@ class Renderer:
 
         p = cls._persistent_draw_count
 
-        # Opaque pass — persistent draws + dynamic opaque draws, depth writes on
+        # Opaque pass: persistent draws + dynamic opaque draws, depth writes on
         if p + num_opaque > 0:
             ctx.depth_mask = True
             cls.model_prog['u_draw_id_offset'].value = 0
             cls.model_vao.render_indirect(cls.draw_cmd_buffer, count=p + num_opaque)
 
-        # Cutout pass — starts immediately after opaque block
+        # Cutout pass: starts immediately after opaque block
         if num_cutout > 0:
             ctx.depth_mask = True
             cls.model_prog['u_draw_id_offset'].value = p + num_opaque
@@ -781,7 +823,7 @@ class Renderer:
             cls.tex_vao.render(mgl.TRIANGLES, vertices=n * 6)
             cls.tex_opaque_queue.clear()
 
-        # Primitives — always on top, depth writes off
+        # Primitives: always on top, depth writes off
         ctx.depth_mask = False
 
         if cls.lines:
@@ -802,7 +844,7 @@ class Renderer:
             cls.point_vao.render(mgl.POINTS, vertices=n_points)
             cls.points.clear()
 
-        # Transparent models — two-pass (back faces then front faces)
+        # Transparent models: two-pass (back faces then front faces)
         if num_transparent > 0:
             ctx.depth_mask = False
             ctx.enable(mgl.CULL_FACE)
@@ -838,7 +880,7 @@ class LightSource:
         self.pos       = position
         self.color     = color
         self.intensity = intensity
-        if len(Renderer.lights) < 8:
+        if len(Renderer.lights) < Renderer.MAX_LIGHTS:
             Renderer.lights.append(self)
 
     def destroy(self):
