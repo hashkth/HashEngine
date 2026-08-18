@@ -68,6 +68,10 @@ class Core:
     @classmethod
     def get_render_target_tex(cls, label: str):
         return cls.render_targets[label][0]
+    
+    @classmethod
+    def get_render_target_framebuffer(cls, label: str):
+        return cls.render_targets[label][1]
 
     @classmethod
     def add_state(cls, state: State):
