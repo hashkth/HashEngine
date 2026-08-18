@@ -66,6 +66,7 @@ class Data:
 
     @classmethod
     def load_bin_tex(cls, label: str, size: tuple, bytes: str):
+        # Used in GLBModel
         if label not in cls.textures:
             cls.textures[label] = cls.core.ctx.texture(size=size, components=4, data=bytes)
             cls.textures[label].build_mipmaps()
