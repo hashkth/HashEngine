@@ -141,8 +141,6 @@ class Core:
         cls.ctx.clear(0.0, 0.0, 0.0, 1.0)
         if cls.active_s:
             cls.active_s.render()
-        # ModelRenderer.render()
-        Renderer.render()
 
     @classmethod
     def render_ui(cls):
