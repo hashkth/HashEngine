@@ -7,17 +7,189 @@ class Audio:
     core = None
     device = None
     context = None
+
+    # Containes al.AudioData instances for each loaded audio file
     audio_data = {}
+
+    # Contains al.Buffer container for each loaded audio file
     audio_buffers = {}
+    
+    # Maintains label --> filepath mapping
     loaded = {}
+
+    # Maintains label --> decoded PCM data mapping
     decoded = {}
-    free_sources = []
-    busy_sources = {}
+    
+    free_sources = [] # Sources available for playing audio
+    busy_sources = {} # Sources currently playing audio: label --> source
+    num_sources = 16  # Number of sources created
+    
     streams = {}
+    
     frame_size = 4096 * 4
     DB_MIN = -80
     DB_MAX = 0
+
+    # Keeps track of when to update source containers
     _check_counter = 0
+
+    @classmethod
+    def init(cls, core):
+        """Initialize Audio"""
+        cls.core = core
+        al.init()
+        cls.device = al.Device()
+        cls.ctx = al.Context(cls.device)
+        cls.free_sources = [al.Source() for i in range(cls.num_sources)]
+
+    @classmethod
+    def add(cls, label: str, filepath: str, surround: bool = False):
+        """Load a new audio under label"""
+        if label not in cls.loaded:
+            cls.loaded[label] = filepath
+            cls.audio_data[label] = al.AudioData(str(filepath), surround)
+            cls.audio_buffers[label] = al.Buffer(cls.audio_data[label])
+
+    @classmethod
+    def remove(cls, label: str):
+        """Remove the audio referenced by label"""
+        if label not in cls.loaded:
+            return
+        if label in cls.busy_sources:
+            cls.busy_sources[label].reset()
+            cls.free_sources.append(cls.busy_sources.pop(label))
+        if label in cls.decoded:
+            del cls.decoded[label]
+        del cls.audio_data[label]
+        del cls.audio_buffers[label]
+        del cls.loaded[label]
+    
+    @classmethod
+    def get_source(cls, label: str):
+        if label in cls.busy_sources:
+            return cls.busy_sources[label]
+        
+    @classmethod
+    def play(cls, label: str, looping: bool = False):
+        """Play the audio referenced by label"""
+        if label in cls.busy_sources:
+            cls.busy_sources[label].play()
+            return
+        if cls.free_sources:
+            cls.free_sources[0].buffer = cls.audio_buffers[label]
+            cls.free_sources[0].looping = looping
+            cls.free_sources[0].play()
+            cls.busy_sources[label] = cls.free_sources.pop(0)
+
+    @classmethod
+    def pause(cls, label: str):
+        """Pause the audio referenced by label"""
+        if label in cls.busy_sources:
+            cls.busy_sources[label].pause()
+    
+    @classmethod
+    def stop(cls, label: str):
+        """Stop the audio referenced by label"""
+        if label in cls.busy_sources:
+            cls.busy_sources[label].reset()
+            cls.free_sources.append(cls.busy_sources.pop(label))
+
+    @classmethod
+    def set_looping(cls, label: str, looping: bool):
+        """Modify looping behavior while audio is playing"""
+        if label in cls.busy_sources:
+            cls.busy_sources[label].looping = looping
+    
+    @classmethod
+    def get_looping(cls, label: str):
+        """Get current looping status while audio is playing"""
+        if label in cls.busy_sources:
+            return cls.busy_sources[label].looping
+        
+    @classmethod
+    def set_offset(cls, label: str, offset: float):
+        """Set offset for the audio referenced by label"""
+        if label in cls.busy_sources:
+            cls.busy_sources[label].offset = offset
+    
+    @classmethod
+    def get_offset(cls, label: str):
+        """Get offset for the audio referenced by label"""
+        if label in cls.busy_sources:
+            return cls.busy_sources[label].offset
+        return 0
+    
+    @classmethod
+    def get_audio_data(cls, label: str):
+        """Returns info about the audio referenced by label"""
+        if label in cls.audio_data:
+            return cls.audio_data[label]
+        
+    @classmethod
+    def get_pcm_bytes(cls, label: str):
+        """Returns PCM bytes for the audio referenced by label"""
+        if label in cls.audio_data:
+            return cls.audio_data[label].decode()
+        
+    @classmethod
+    def add_stream(cls, label: str, filepath: str):
+        """Load a streamable audio file referred by label"""
+        cls.streams[label] = al.Stream(str(filepath))
+
+    @classmethod
+    def remove_stream(cls, label: str):
+        """Remove the streamable audio file referred by label"""
+        if label in cls.streams:
+            del cls.streams[label]
+
+    @classmethod
+    def get_stream(cls, label: str):
+        if label in cls.streams:
+            return cls.streams[label]
+
+    @classmethod
+    def play_stream(cls, label: str, looping: bool = False):
+        """Play the stream referred by label"""
+        if label in cls.streams:
+            cls.streams[label].looping = looping
+            cls.streams[label].play()
+
+    @classmethod
+    def pause_stream(cls, label: str):
+        """Pause the stream referred by label"""
+        if label in cls.streams:
+            cls.streams[label].pause()
+    
+    @classmethod
+    def stop_stream(cls, label: str):
+        """Stop the stream referred by label"""
+        if label in cls.streams:
+            cls.streams[label].stop()
+
+    @classmethod
+    def set_stream_looping(cls, label: str, looping: bool):
+        """Set looping behavior for the stream referred by label"""
+        if label in cls.streams:
+            cls.streams[label].looping = looping
+    
+    @classmethod
+    def get_stream_looping(cls, label: str):
+        """Get current looping status for the stream referred by label"""
+        if label in cls.streams:
+            return cls.streams[label].looping
+
+    @classmethod
+    def set_stream_offset(cls, label: str, offset: float):
+        """Set offset for the stream referred by label"""
+        if label in cls.streams:
+            cls.streams[label].offset = offset
+
+    @classmethod
+    def get_stream_offset(cls, label: str):
+        """Get offset for the stream referred by label"""
+        if label in cls.streams:
+            return cls.streams[label].offset
+        return 0
 
     @classmethod
     def compute_spectrum(cls, chunk, sample_rate):
@@ -50,131 +222,20 @@ class Audio:
         return np.array(bars)
 
     @classmethod
-    def init(cls, core):
-        cls.core = core
-        al.init()
-        cls.device = al.Device()
-        cls.ctx = al.Context(cls.device)
-        cls.free_sources = [al.Source() for i in range(16)]
-
-    @classmethod
-    def create_buffer(cls, label: str, filename: str, surround: bool = False):
-        cls.loaded[label] = filename + str(surround)
-        if cls.loaded[label] not in cls.audio_data:
-            cls.audio_data[cls.loaded[label]] = al.AudioData(str(AUDIO_DIR.joinpath(filename)), surround)
-            cls.audio_buffers[cls.loaded[label]] = al.Buffer(cls.audio_data[cls.loaded[label]])
-
-    @classmethod
-    def create_stream(cls, label: str, filename: str):
-        cls.streams[label] = al.Stream(str(AUDIO_DIR.joinpath(filename)))
-
-    @classmethod
-    def get_stream(cls, label: str):
-        if label in cls.streams:
-            return cls.streams[label]
-    
-    @classmethod
-    def get_source(cls, label: str):
-        if label in cls.busy_sources:
-            return label
-    
-    @classmethod
-    def delete_buffer(cls, label: str):
-        if label not in cls.loaded:
-            return
-        filename = cls.loaded[label]
-        if label in cls.busy_sources:
-            cls.busy_sources[label].reset()
-            cls.free_sources.append(cls.busy_sources[label])
-            del cls.busy_sources[label]
-        del cls.loaded[label]
-        if filename in cls.loaded.values():
-            return
-        if filename in cls.decoded:
-            del cls.decoded[filename]
-        if filename in cls.audio_buffers:
-            del cls.audio_buffers[filename]
-        if filename in cls.audio_data:
-            del cls.audio_data[filename]
-
-    @classmethod
-    def delete_stream(cls, label: str):
-        if label in cls.streams:
-            del cls.streams[label]
-
-    @classmethod
-    def play(cls, label: str, looping: bool = False):
-        if label in cls.busy_sources:
-            cls.busy_sources[label].stop()
-            cls.busy_sources[label].play()
-            return
-        if cls.free_sources:
-            cls.free_sources[0].buffer = cls.audio_buffers[cls.loaded[label]]
-            cls.free_sources[0].looping = looping
-            cls.free_sources[0].play()
-            cls.busy_sources[label] = cls.free_sources.pop(0)
-    
-    @classmethod
-    def pause(cls, label: str):
-        if label in cls.busy_sources:
-            cls.busy_sources[label].pause()
-    
-    @classmethod
-    def resume(cls, label: str):
-        if label in cls.busy_sources:
-            cls.busy_sources[label].play()
-    
-    @classmethod
-    def stop(cls, label: str):
-        if label in cls.busy_sources:
-            cls.busy_sources[label].stop()
-
-    @classmethod
-    def set_looping(cls, label: str, looping: bool):
-        if label in cls.busy_sources:
-            cls.busy_sources[label].looping = looping
-    
-    @classmethod
-    def get_looping(cls, label: str):
-        if label in cls.busy_sources:
-            return cls.busy_sources[label].looping
-
-    @classmethod
-    def set_offset(cls, label: str, offset: float):
-        if label in cls.busy_sources:
-            cls.busy_sources[label].offset = offset
-    
-    @classmethod
-    def get_offset(cls, label: str):
-        if label in cls.busy_sources:
-            return cls.busy_sources[label].offset
-        return 0
-    
-    @classmethod
-    def get_data(cls, label: str):
-        if cls.loaded[label] in cls.audio_data:
-            return cls.audio_data[cls.loaded[label]]
-    
-    @classmethod
-    def get_pcm_bytes(cls, label: str):
-        if cls.loaded[label] in cls.audio_data:
-            return cls.audio_data[cls.loaded[label]].decode()
-
-    @classmethod
     def get_spectrum(cls, label: str, offset: float, bars: int):
-        data = cls.get_data(label)
-        if cls.loaded[label] not in cls.decoded:
-            cls.decoded[cls.loaded[label]] = data.decode()
+        data = cls.get_audio_data(label)
+        if label not in cls.decoded:
+            cls.decoded[label] = data.decode()
         bytes_per_frame = data.bytes_per_sample * data.channels
-        sample_index = int(offset * data.sample_rate) % data.samples
+        sample_index = int(offset * data.sample_rate) % data.total_samples
         start_byte = sample_index * bytes_per_frame
         end_byte = start_byte + cls.frame_size * bytes_per_frame
-        total_bytes = len(cls.decoded[cls.loaded[label]])
+        total_bytes = len(cls.decoded[label])
         if end_byte <= total_bytes:
-            raw_slice = cls.decoded[cls.loaded[label]][start_byte:end_byte]
+            raw_slice = cls.decoded[label][start_byte:end_byte]
         else:
-            part1 = cls.decoded[cls.loaded[label]][start_byte:]
-            part2 = cls.decoded[cls.loaded[label]][:end_byte % total_bytes]
+            part1 = cls.decoded[label][start_byte:]
+            part2 = cls.decoded[label][:end_byte % total_bytes]
             raw_slice = part1 + part2
         final_data = np.frombuffer(raw_slice, dtype=np.int16)
         if data.channels == 2:
@@ -188,8 +249,11 @@ class Audio:
 
     @classmethod
     def process(cls):
-        for stream in cls.streams:
-            cls.streams[stream].update()
+        # Update all streams every frame
+        for label in cls.streams:
+            cls.streams[label].update()
+        
+        # Check for freed sources every 60 frames
         if cls._check_counter >= 60:
             remove = []
             for label in cls.busy_sources:
