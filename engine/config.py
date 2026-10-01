@@ -35,6 +35,7 @@ os.environ["ALSOFT_CONF"] = str(CWD.joinpath("alsoft.ini"))
 # Other libraries
 import glux
 from glux import imgui
+from glux import implot
 import pyopenalsoft as al
 import moderngl as mgl
 import numpy as np
